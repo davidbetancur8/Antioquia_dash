@@ -3,6 +3,7 @@
 # ===================================================================
 
 import dash
+import dash_table
 import dash_core_components as dcc
 import dash_html_components as html
 import dash_bootstrap_components as dbc
@@ -17,49 +18,59 @@ import requests
 from urllib.request import urlopen
 import json
 import numpy as np
+import topojson
+from topojson import geometry
+
+with urlopen('https://raw.githubusercontent.com/davidbetancur8/Antioquia_dash/master/colombia-municipios.json') as response:
+        topoJSON = json.load(response)
+
+
+def top2geo(topoJSON):
+    geometries = topoJSON["objects"]["mpios"]["geometries"]
+    geometries_ant = []
+    ciudades = []
+    for mpio in geometries:
+        if mpio["properties"]["dpt"] == "ANTIOQUIA":
+            geometries_ant.append(mpio)
+            ciudades.append(mpio["properties"]["name"])
+    topoJSON["objects"]["mpios"]["geometries"] = geometries_ant
+    topo_features = topoJSON['objects']["mpios"]['geometries']
+    scale = topoJSON['transform']['scale']
+    translation = topoJSON['transform']['translate']
+
+    geoJSON=dict(type= 'FeatureCollection', 
+                features = [])
+
+    for k, tfeature in enumerate(topo_features):
+        geo_feature = dict(id=k, type= "Feature")
+        geo_feature['properties'] = tfeature['properties']
+        geo_feature['geometry'] = geometry(tfeature, topoJSON['arcs'], scale, translation)    
+        geoJSON['features'].append(geo_feature) 
+
+    return geoJSON
 
 
 
+def get_city_names(topoJSON):
+    geometries = topoJSON["objects"]["mpios"]["geometries"]
+    ciudades = []
+    for mpio in geometries:
+        if mpio["properties"]["dpt"] == "ANTIOQUIA":
+            ciudades.append(mpio["properties"]["name"])
+    return ciudades
 
-def generar_cuenta_colombia():
-    lista = ["Amazonas","Antioquia","Arauca","Atlántico","Bogotá","Bolívar",
-    "Boyacá","Caldas","Caquetá","Casanare","Cauca","Cesar","Chocó",
-    "Córdoba","Cundinamarca","Guainía","Guaviare","Huila","La Guajira","Magdalena",
-    "Meta","Nariño","Norte de Santander","Putumayo","Quindío","Risaralda","San Andrés y Providencia",
-    "Santander","Sucre","Tolima","Valle del Cauca","Vaupés","Vichada"]
-    lista = [depto.upper() for depto in lista]
-    ceros = [0]*len(lista)
-    df_ceros = pd.DataFrame({"NOMBRE_DPT":lista, "cuenta_ceros":ceros})
 
-    df_data = pd.read_csv("data/Casos1.csv")
-    df_data = df_data.rename(columns={"Departamento": "NOMBRE_DPT"})
-    df_data["NOMBRE_DPT"] = df_data["NOMBRE_DPT"].str.upper()
-    df_cuenta = pd.DataFrame(df_data.groupby("NOMBRE_DPT")["ID de caso"].count()).reset_index().rename(columns={"ID de caso": "cuenta"})
-    df_merge = df_ceros.merge(df_cuenta, on="NOMBRE_DPT", how="left")
-    df_merge["total"] = df_merge["cuenta"] + df_merge["cuenta_ceros"]
-    df_merge = df_merge.drop(["cuenta", "cuenta_ceros"], axis=1)
-    nombres_dict = {"BOGOTÁ": "SANTAFE DE BOGOTA D.C",
-                    "VALLE": "VALLE DEL CAUCA"}
-    for dept in nombres_dict:
-        df_merge = df_merge.replace(dept, nombres_dict[dept])
-    df_merge = df_merge.fillna(0)
-    df_merge['NOMBRE_DPT'] = df_merge['NOMBRE_DPT'].str.normalize('NFKD').str.encode('ascii', errors='ignore').str.decode('utf-8')
-    df_merge = df_merge.replace("NARINO", "NARIÑO")
-    return df_merge
+def generar_mapa_antioquia_cuenta(df_ciudades_ant_cuenta):
+    geoJSON = top2geo(topoJSON)
 
-def generar_mapa_colombia_cuenta():
-    df_merge = generar_cuenta_colombia()
-    with urlopen('https://gist.githubusercontent.com/john-guerra/43c7656821069d00dcbc/raw/be6a6e239cd5b5b803c6e7c2ec405b793a9064dd/Colombia.geo.json') as response:
-        counties = json.load(response)
+    fig = px.choropleth(df_ciudades_ant_cuenta, geojson=geoJSON, color="cuenta",
+                        locations="ciudad", featureidkey="properties.name",
+                        width=1000, height=1000,
+                        projection="mercator",scope="south america",color_continuous_scale=px.colors.sequential.Blues)
 
-    fig = px.choropleth(df_merge, geojson=counties, color="total",
-                        locations="NOMBRE_DPT", featureidkey="properties.NOMBRE_DPT",
-                        projection="mercator",scope="south america",color_continuous_scale=px.colors.sequential.Blues
-                    )
-    fig.update_geos(fitbounds="locations", visible=False, showcountries=True, countrycolor="Black",
-        showsubunits=True)
+    fig.update_geos(fitbounds="locations", visible=True, showcountries=True, countrycolor="Black", showsubunits=True)
     fig.update_layout(
-        title_text = 'Confirmados en Colombia',
+        title_text = 'Confirmados Antioquia',
         font=dict(
             family="Courier New, monospace",
             size=25,
@@ -69,88 +80,115 @@ def generar_mapa_colombia_cuenta():
     return fig
 
 
+def generate_initial_df():
+    ciudades = get_city_names(topoJSON)
+    df = pd.DataFrame({"ciudad": ciudades, "cuenta":[0]*len(ciudades)})
+    return df
 
-
-
-    cod =row["codigos"]
-    row_cod = df_lat_lon[df_lat_lon["code"] == cod]
-    row["lat"] = row_cod["lat"].values[0]
-    row["long"] = row_cod["lon"].values[0]
-    return row
-
-
+df = generate_initial_df()
+geoJSON = top2geo(topoJSON)
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
 
 
+
 app.layout = dbc.Container([
     html.Div([
-        html.H2("Coronavirus", className="pretty_container", style={'text-align': 'center'}),
-        html.Div([html.H2("Confirmed: ", style = {"color": "#14378F "}),
-                  html.H2(total_confirmed)], 
-                className="pretty_container", style={'text-align': 'center'}),
-
-        html.Div([html.H2("Deaths: ", style = {"color": "#AF1E3E "}),
-                        html.H2(total_deaths)], 
-                        className="pretty_container", style={'text-align': 'center'}),
-
-        html.Div([html.H2("Recovered: ", style = {"color": "#07830D"}),
-                  html.H2(total_recovered)], 
-                className="pretty_container", style={'text-align': 'center'}),
-        
-        html.Div([html.H2("Confirmados en Colombia: ", style = {"color": "#89690E"}),
-                  html.H2(total_colombia)], 
-                className="pretty_container", style={'text-align': 'center'}),
-        ],className="pretty_container"
-
-    ),
-    
+        html.H2("Antioquia en datos", className="pretty_container", style={'text-align': 'center'})],className="pretty_container"),
+    html.Div([
+            html.H3("Titulo", className="pretty_container", style={'text-align': 'center'}),
+            dcc.Input(
+                id = "input_titulo",
+                placeholder = "Ingresa el título",
+                type="text",
+                value = "",
+                className = "pretty_container",
+                style={'text-align': 'center'}
+            )
+    ],className="pretty_container", style={'text-align': 'center'}),
+    html.Div([
+            html.H3("Nombre de la variable", className="pretty_container", style={'text-align': 'center'}),
+            dcc.Input(
+                id = "input_var",
+                placeholder = "Ingresa el nombre de la variable",
+                type="text",
+                value = "",
+                className = "pretty_container"
+                
+            )
+    ],className="pretty_container", style={'text-align': 'center'}),
     html.Div([  dbc.Row([
                     html.Div(
                         dcc.Graph(
                             id = "mapa_colombia",
-                            figure = generar_mapa_colombia_cuenta()
                         ), className="pretty_container"
                     ),
                 ]),
+    html.Div([
+        dash_table.DataTable(
+            id='table-editing-simple',
+            columns=[{"name": i, "id": i} for i in df.columns],
+            data=df.to_dict('records'),
+            editable=True
+        ),
+    ],className="pretty_container"),
+    
+    
                 
-    ])
+    ], className="pretty_container")
 
 
 ], fluid=True)
 
 
 
-# @app.callback(Output("mapa1", "figure"),
-#             [Input('radio_mapa', 'value')])
 
-# def update_mapa1(input_value):
-#     cuenta = df_data.groupby("Country")[input_value].max().reset_index()
-#     cuenta = cuenta[cuenta[input_value]>0]
-#     if input_value == "Confirmed":
-#         maximo = 5000
-#     elif input_value == "Deaths":
-#         maximo = 50
-#     else:
-#         maximo = 500
-#     fig = px.choropleth(cuenta, 
-#                             locations="Country", 
-#                             locationmode='country names', 
-#                             color=input_value, 
-#                             hover_name="Country", 
-#                             range_color=[1,maximo], 
-#                             color_continuous_scale="Sunsetdark")  
 
-#     fig.update_layout(title=f'Countries with {input_value} Cases',
-#                         font=dict(
-#                                 family="Courier New, monospace",
-#                                 size=15,
-#                                 color="#7f7f7f"
-#                             ),
-#                  )
-#     return fig
+@app.callback(
+    Output('mapa_colombia', 'figure'),
+    [Input('table-editing-simple', 'data'),
+     Input('table-editing-simple', 'columns'),
+     Input('input_titulo', 'value'),
+     Input('input_var', 'value')])
+
+def display_output(rows, columns, titulo, varname):
+    df_ciudades_ant_cuenta = pd.DataFrame(rows, columns=[c['name'] for c in columns])
+
+
+
+    fig = go.Figure(data=go.Choropleth(
+        locations=df_ciudades_ant_cuenta['ciudad'], # Spatial coordinates
+        z = df_ciudades_ant_cuenta['cuenta'].astype(float), # Data to be color-coded
+        geojson = geoJSON,
+        featureidkey="properties.name",
+        colorscale = 'Blues',
+        colorbar_title = varname,
+        locationmode = 'geojson-id'
+    ))
+
+    fig.update_geos(fitbounds="locations", visible=False, showcountries=False, countrycolor="Black", showsubunits=False)
+    fig.update_layout(
+        width=1000,
+        height=1000,
+        geo = dict(
+            scope='south america',
+            projection=go.layout.geo.Projection(type = 'mercator'),
+            showlakes=True, # lakes
+            lakecolor='rgb(255, 255, 255)'),
+
+        title_text = titulo,
+        font=dict(
+            family="Courier New, monospace",
+            size=25,
+            color="#7f7f7f"
+        )
+    )
+
+    return fig
+
 
 
 if __name__ == "__main__":
-    app.run_server(port=4070)
+    app.run_server(port=4060)
+
